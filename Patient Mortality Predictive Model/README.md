@@ -1,0 +1,30 @@
+# Patient Mortality Prediction
+
+## Overview
+
+This project focuses on developing an end-to-end machine learning pipeline to predict patient mortality within 180 days of their last recorded medical visit.
+The analysis was conducted using a EHR data set curated by the University of Washington as part of [the EHR Dream Challenge](https://www.synapse.org/Synapse:syn18405991/wiki/589657) 
+
+The project was completed as part of the **HIDS 6001: Massive Health Data Fundamentals** course in Health Informatics and Data Science Graduate Program at Georgetown University.
+
+---
+
+## Objectives
+
+1. **Predict patient mortality** within 180 days using retrospective data.
+2. Design and implement a **machine learning pipeline** tailored for healthcare datasets.
+3. Address challenges such as **class imbalance** and integrate domain-specific features for model training.
+
+
+## Contributions
+
+- **Austin Cherian:** Feature extraction, model implementation, hyperparameter tuning, feature importance analysis, slides, and final report.
+- **Hanane Bousfoul:** Outcome variable calculation, conditions transformation, result analysis, slides, and final report.
+- **Natalie Ellis:** EDA, high-risk admissions identification, medication analysis, and binary flag creation, slides, and final report.
+
+---
+
+## References
+
+1. [EHR DREAM Challenge - Synapse.org](https://www.synapse.org/Synapse:syn18405991/wiki/589657)
+2. [Charlson Comorbidity Index - MDCalc](https://www.mdcalc.com/calc/3917/charlson-comorbidity-index-cci)
