@@ -1,0 +1,333 @@
+---
+title: "Class 5 Homework"
+author: "Austin Cherian"
+date: "2024-10-04"
+format: 
+  html:
+    self-contained: true
+editor: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r, include = FALSE}
+#| warning: false
+library(tidyverse)     # loads the tidyverse tools
+library(RPostgres)     # loads the database driver for PostgreSQL
+library(connections)   # helps RPostgres work with RStudio
+library(keyring)       # access to a local encrypted keychain for passwords
+
+con <- connection_open(RPostgres::Postgres(),
+          dbname = "syntheticmguh",
+          host = "34.145.215.95",
+          user = "hids502_student",
+          password = key_get(service = "syntheticmguh", 
+                             username = "hids502_student"),
+          # Tell the driver to return very large integers as floating point (vs truncating them)
+          bigint = "numeric")
+```
+
+# Multi-stakeholder COVID Registry
+
+## Introduction
+
+The COVID-19 pandemic has underscored the urgent need for collaborative efforts in healthcare to enhance patient care and outcomes.
+As we navigate the complexities of this ongoing public health challenge, the three Washington, DC hospitals—MedStar Georgetown University Hospital (MGUH), Sibley Memorial Hospital, and George Washington University Hospital (GW)—have recognized the importance of pooling our resources and expertise to create a comprehensive multi-stakeholder registry for COVID-19 patients.
+Our team, at Medstar Georgetown, has taken the initiative to establish a unified platform for data sharing and analysis, leveraging the diverse electronic medical record (EMR) systems and data models utilized by each institution.
+By coordinating our efforts, we will be able to identify trends, share best practices, and ultimately improve clinical care for COVID-19 patients across our hospitals.
+This proposal outlines the framework for developing and managing this registry, with our hospital serving as the lead in the coordination and hosting of the data.
+
+## Standards for Selecting Patient Cohort
+
+To establish a comprehensive and reliable shared data registry on COVID patients across the three DC hospitals, we will implement stringent criteria for defining a “COVID patient.” Our selection logic will include the following specific requirements:
+
+1.  **Positive COVID-19 Lab Test Results:** We will include patients with a confirmed positive test result for COVID-19, specifically utilizing the “SARS-CoV-2 RNA Pnl Resp NAA+probe.” This diagnostic standard minimizes discrepancies among the hospitals and ensures that our registry is based on verified cases. The possible pitfall of this criterion is that there could be false positive and false negative results, although the latter is much less frequent.
+2.  **Physician Diagnosis of COVID-19:** Patients diagnosed with COVID-19 by a physician will also be included. This criterion accounts for those cases where testing may not have been performed but where clinical judgment supports a COVID diagnosis. While this approach relies on the expertise of healthcare providers and standardized diagnostic protocols, we acknowledge potential challenges such as under reporting of mild or asymptomatic cases, variability in diagnostic practices among physicians, and biases that may arise during periods of heightened awareness of COVID-19.
+3.  **Encounters with Diagnosed COVID-19 Patients:** We will include patients who had documented encounters with diagnosed COVID-19 cases. This encompasses scenarios such as severe complications leading to COVID-related deaths, ICU admissions, or hospitalizations for isolation. Including these encounters adds an extra layer of validity to our dataset, as patients in these cases are likely to have presented with significant symptoms, leading to more accurate diagnoses. However, in the absence of severe encounters, our reliance will primarily be on the physician's assessment and positive lab results.
+
+#### Logic for Selecting Patients with Positive COVID-19 Lab Test Results
+
+```{sql connection = con}
+SELECT DISTINCT patient, code, description, value 
+FROM observations
+WHERE code = '94531-1' -- this is the LOINC code for a COVID test
+AND value = 'Detected (qualifier value)' -- this indicates a positive value for the COVID test
+```
+
+```{sql connection = con}
+-- How many patients fit the criterion for a positive covid lab test?
+SELECT code, description, value, COUNT(DISTINCT patient) AS covid_pt_count
+FROM observations
+WHERE code = '94531-1' AND value = 'Detected (qualifier value)'
+GROUP BY code, description, value
+-- 2349 patients
+```
+
+#### Logic for Selecting Patients with Physician Diagnosis of COVID-19
+
+```{sql connection = con}
+SELECT DISTINCT patient, code, description
+FROM conditions 
+WHERE code = '840539006' -- SNOWMED CT code for COVID-19 diagnosis
+AND description = 'COVID-19' -- just to make extra sure we get confirmed COVID 19 diagnoses
+```
+
+```{sql connection = con}
+--How many patients fit the second criterion of confirmed COVID diagnosis? 
+SELECT code, description, COUNT(DISTINCT patient) AS covid_pt_count
+FROM conditions 
+WHERE code = '840539006' AND description = 'COVID-19'
+GROUP BY code, description
+-- 2349 patients again
+
+```
+
+#### Logic for Selecting Patients with Encounters of Diagnosed COVID-19
+
+```{sql connection = con}
+SELECT DISTINCT patient, reasoncode, reasondescription
+FROM encounters
+WHERE reasoncode = '840539006' -- SNOWMED CT Code for COVID diagnosis
+AND reasondescription = 'COVID-19'
+```
+
+```{sql connection = con}
+-- How many patients fit this third criterion ?
+SELECT reasoncode, reasondescription, COUNT(DISTINCT patient) AS covid_pt_count
+FROM encounters
+WHERE reasoncode = '840539006' AND reasondescription = 'COVID-19'
+GROUP BY reasoncode, reasondescription
+-- 451 patients
+```
+
+### Connecting the mini-registries into one big registry
+
+```{sql connection = con}
+WITH covid_pt_registry AS (
+  SELECT DISTINCT patient
+  FROM observations
+  WHERE code = '94531-1' AND value = 'Detected (qualifier value)'
+  UNION
+  SELECT DISTINCT patient
+  FROM conditions 
+  WHERE code = '840539006' AND description = 'COVID-19'
+  UNION
+  SELECT DISTINCT patient
+  FROM encounters
+  WHERE reasoncode = '840539006' AND reasondescription = 'COVID-19'
+)
+
+SELECT COUNT(c.patient) AS total_covid_pt_count
+FROM covid_pt_registry AS c
+-- after combining patients into a combined registry, there are 2349 in our combined registry
+```
+
+I found it interesting that the total number of COVID patients in our combined registry matched the number in both the positive lab results and physician-diagnosed mini-registries.
+This suggests a considerable overlap among the patients recorded in these registries.
+To quantify the extent of this overlap between the positive lab results and physician-diagnosed mini-registries, I developed the following query:
+
+```{sql connection = con}
+WITH cov_obs AS (
+  SELECT DISTINCT patient
+  FROM observations
+  WHERE code = '94531-1' AND value = 'Detected (qualifier value)'
+),
+joined_registry AS (
+  SELECT DISTINCT c.patient
+  FROM conditions AS c
+  JOIN cov_obs AS co 
+  ON c.patient = co.patient
+  WHERE c.code = '840539006' AND c.description = 'COVID-19'
+  
+)
+
+SELECT COUNT(jr.patient) AS matching_records_of_covid_patients_count
+FROM joined_registry AS jr
+```
+
+The results of the query demonstrate that when we perform an INNER JOIN on the mini-registries, retaining only the matching rows, the count of COVID patients remains consistent at 2349.
+This finding confirms that patients formally diagnosed with COVID by a physician also tested positive for the virus, thereby enhancing the validity of our COVID patient registry.
+
+## What Data Features To Include In Registry
+
+The goal of our shared COVID patient registry proposal is to enhance clinical care for COVID-19 patients across participating hospitals.
+By leveraging a comprehensive data set, we aim to identify patterns and correlations that can inform prevention strategies, improve screening processes, optimize treatment protocols, and ultimately enhance patient outcomes.
+The variables we select will directly support this objective by providing insights into various factors influencing COVID-19 management and recovery.
+
+### Patient Identifying Information
+
+We will include a combination of patient identifying information such as the Patient Identification Number (PIN), age, and gender to uniquely identify each patient.
+Beyond patient identification, there are many variables to include in our registry for analysis.
+
+### Key Variables to Include:
+
+-   Demographics Variables:
+    -   Age, Gender Race, Ethnicity, County/Zip Code
+    -   Source: Patients Table
+    -   Purpose:
+        -   Assess health disparities and geographic variations in COVID-19 outcomes.
+        -   Evaluate the impact of social determinants of health on COVID-19 severity and outcomes.
+        -   Analyze geographic variations in infection rates and healthcare access.
+-   Allergy Information
+    -   Variables: Allergy Code, Description, Category
+    -   Source: Allergies Table
+    -   Purpose: Explore potential connections between allergies and COVID-19 severity or response.
+-   Comorbidities
+    -   Variables: Condition Code, Description
+    -   Source: Conditions Table
+    -   Purpose: Assess how existing health issues impact COVID-19 outcomes.
+-   Healthcare Interaction Data
+    -   Variables: Provider, Organization, Encounter Class, Description
+    -   Source: Encounters Table
+    -   Purpose: Analyze how variations in care settings and providers affect patient outcomes.
+-   Immunizations
+    -   Variables: Immunization Code, Description
+    -   Source: Immunizations Table
+    -   Purpose: Evaluate the relationship between vaccination status and COVID-19 severity or outcomes.
+-   Medications
+    -   Variables: Medication Code, Description
+    -   Source: Medications Table
+    -   Purpose: Analyze the effects of specific medications on COVID-19 outcomes and potential interactions.
+-   Laboratory Results
+    -   Variables: Lab Code, Description
+    -   Source: Observations Table
+    -   Purpose: Examine correlations between lab findings and COVID-19 diagnosis or treatment efficacy.
+
+As to how we will extract the data, an example of how that can be done manually is shown in the data integration step, but the ETL process can also be automated with ETL software.
+
+## Data Integration Strategy
+
+Given that each hospital employs a different Electronic Medical Record (EMR) system, our approach to data integration will involve the following steps:
+
+1.  **Common Data Model (CDM):**
+    -   We will adopt the Observational Health Data Sciences and Informatics (OHDSI) OMOP Common Data Model (CDM) as our framework for data integration. This model allows for the standardization of disparate data formats from each hospital, facilitating unified analysis and interpretation of patient data.
+    -   By utilizing the OMOP CDM, we ensure that critical patient information such as demographics, diagnoses, treatments, and outcomes are consistently represented across all participating hospitals.
+2.  **Data Mapping and Standardization:**
+    -   A comprehensive data mapping exercise will be conducted to identify equivalent data elements across the different EMRs. This will involve aligning fields such as patient age, gender, and diagnosis date to a standardized format.
+3.  **Data Integration Tools:**
+    -   We will employ data integration tools to extract, transform, and load data from each EMR into a centralized data warehouse.
+        This process will include data cleansing to remove duplicates and errors.
+
+    -   With ETL software we can automate the extraction of patient records, ensuring they are regularly updated and reflect the most current data.
+4.  **Data Governance and Security:**
+    -   A data governance framework will be established to manage data sharing, privacy, and compliance with HIPAA regulations. This framework will include protocols for data access and usage, ensuring that all stakeholders are aligned on data integrity and security.
+    -   For example, we will implement role-based access controls to restrict sensitive data access only to authorized personnel.
+
+### Demonstration of Data Integration Strategy
+
+This is an example of how the ETL process might be executed manually to facilitate analysis of patient features.
+Initially, we would map each field from the source data to the corresponding field in the OMOP Common Data Model (CDM).
+For instance, we would convert the gender field from the patients table in the Synthea dataset to the gender_concept_id field in the PERSON table, in accordance with the OMOP CDM specifications.
+
+#### Step 1. Initialize the OMOP CDM PERSON table
+
+In the first step, we initialize a OMOP CDM PERSON table that we want to transfer our gender data into.
+
+```{sql connection=con}
+CREATE TEMPORARY TABLE PERSON (
+  gender_concept_id int
+)
+```
+
+#### Step 2. Extract, Transform, Load
+
+In Step 2, we extract the gender data from the source data set, transform it to align with the OMOP Common Data Model (CDM) standards, and insert it into the newly created PERSON table.
+According to OMOP CDM standards, each gender is assigned a unique integer: 8507 for males and 8532 for females.
+
+```{sql connection = con}
+INSERT INTO PERSON (gender_concept_id) 
+SELECT  
+    CASE 
+        WHEN gender = 'M' THEN 8507  
+        WHEN gender = 'F' THEN 8532  
+        ELSE NULL                   -- Handle unknown or missing values
+    END AS gender_concept_id
+FROM patients
+WHERE gender IS NOT NULL;
+```
+
+#### Step 3. Evaluate the transformed data in the OMOP CDM table.
+
+```{sql connection = con}
+SELECT gender_concept_id
+FROM PERSON
+```
+
+Assuming we have completed this process for all three hospitals, we would then be able to analyze the gender variable across all patients in our COVID registry.
+For instance, we could examine the total number of males recorded in the registry.
+
+```{sql connection = con}
+SELECT COUNT(gender_concept_id)
+FROM PERSON
+WHERE gender_concept_id = 8507 
+--There are currently 13932 males in the registry
+```
+
+## Outcomes We Wish To Track
+
+Here are the outcomes we aim to track, along with the rationale for each and the data required to measure them.
+
+1.  **COVID-19 Severity Outcomes**
+
+    -   Outcomes to Track:
+        -   Hospitalization rates
+        -   ICU admission rates
+        -   Mortality rates
+    -   Rationale:
+        -   Understanding the severity of cases helps identify high-risk populations and assess healthcare needs.
+    -   Data Needed:
+        -   Healthcare Interaction Data:
+            -   Provider, Organization, Encounter Class, Description from the Encounters Table (to track hospitalizations and ICU admissions)
+        -   Demographics Variables:
+            -   Age, Gender, Race, Ethnicity from Patients Table (to assess disparities in severity)
+        -   Comorbidities:
+            -   Condition Code, Description from the Conditions table (to identify high-risk groups)
+
+2.  **Impact of Vaccination**
+
+    -   Outcomes to Track:
+        -   Rates of COVID-19 infection among vaccinated vs. unvaccinated populations
+        -   Severity of cases based on vaccination status
+    -   Rationale:
+        -   Evaluating vaccination effectiveness informs public health strategies and vaccination campaigns.
+    -   Data Needed:
+        -   Immunizations:
+            -   Immunization Code, Description from Immunizations table (to determine vaccination status)
+            -   Healthcare Interaction Data: Provider, Organization, Encounter Class from Encounters table (to correlate care received with vaccination status)
+            -   Demographics Variables: Age, Gender, Ethnicity from Patients table (to analyze vaccination coverage across different groups)
+
+3.  **Allergy-Related Outcomes**
+
+    -   Outcomes to Track:
+        -   Severity of COVID-19 cases in patients with allergies
+    -   Rationale:
+        -   Understanding if allergies impact COVID-19 severity could lead to tailored treatment approaches.
+    -   Data Needed:
+        -   Allergy Information: Allergy Code, Description from Allergies table (to identify patients with allergies)
+        -   Comorbidities: Condition Code, Description from Conditions table (to evaluate how allergies interact with other conditions)
+
+4.  **Socioeconomic Disparities**
+
+    -   Outcomes to Track:
+        -   Infection rates and outcomes based on geographic location
+    -   Rationale:
+        -   Identifying disparities helps target interventions and resource allocation.
+    -   Data Needed:
+        -   Demographics Variables:
+            -   County/Zip Code from Patients table (to assess geographic factors)
+        -   Healthcare Interaction Data:
+            -   Organization, Provider from Encounters table (to examine access to care)
+        -   Comorbidities:
+            -   Condition Code, Description from Conditions table (to correlate health status with socioeconomic data)
+
+5.  **Laboratory Findings Correlation**
+
+    -   Outcomes to Track:
+        -   Correlations between lab results (e.g., inflammatory markers) and COVID-19 severity or treatment response
+    -   Rationale:
+        -   Identifying key lab markers can enhance understanding of disease progression and inform treatment decisions.
+    -   Data Needed:
+        -   Laboratory Results:
+            -   Lab Code, Description from Observations table (to track relevant lab findings)
+        -   Healthcare Interaction Data:
+            -   Encounter Class, Description from Encounters table (to link lab results with patient outcomes)
