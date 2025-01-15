@@ -1,0 +1,129 @@
+---
+author: "Austin Cherian"
+date: "2024-11-24"
+output: html_document
+title: "Final Project pt. 2"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#load necessary packages
+library(enrichR)
+library(openxlsx)
+```
+
+## R Markdown - Enrichment anlalysis using EnrichR R package
+
+Summary
+- Input gene lists created from T-Test / EdgeR group comparison analysis . Or an short list of genes of interest from your collaborator (Researcher/Clinician/)
+- If needed, short list genes based on p-value or FDR value.
+- Run EnrichR on short listed gene list
+
+## Import T-test results so that we can short list further
+```{r}
+#folder that contains group comparison results
+fileName <- "/Users/austincherian/HIDS_7003/finalProject/Part_1/code/output/20241123_TTest__Bladder mucosae surrounding cancer_(Comp).vs._Normal bladder mucosae_(Base).TTest.csv"
+
+# read in group comparison results
+result1 <- read.csv(file = fileName, 
+                        header = T, stringsAsFactors = F, row.names = 1)
+head(result1)
+```
+
+# Filtering/shortlisting example - 1
+Short list results based in p-value cut off on FDR-adjusted p-values (FDR p-value <= 0.01)
+```{r}
+pValueCutOff <- 0.01
+
+# Apply p.adjust to the Pvalue column of result1
+adjustedPvalues <- p.adjust(result1$Pvalue, method = "BH")
+
+# Find indices where adjusted p-values are <= 0.01
+which1 <- adjustedPvalues <= pValueCutOff
+
+# Summarize the number of genes passing the cutoff
+table(which1) # 273 genes have FDR adjusted p-value less than the cutoff
+
+# Subset the data to include only shortlisted genes
+resultShort <- result1[which1, ]
+
+
+```
+## Export the short listed results for reference
+```{r}
+#length of short listed results
+nrow(resultShort)
+
+write.csv(x = resultShort, file = "/Users/austincherian/HIDS_7003/Class_07/Homework_07/output/TTest_results_shortlist2.csv")
+
+head(resultShort)
+```
+## Clean gene names
+Note - the gene names are in the form of "reporterid|genename". So need to split this.
+```{r}
+funcSplit <- function(rep_gene) {
+    rep_gene_split <- unlist(strsplit(x = rep_gene, 
+                                      split = "|", 
+                                      fixed = TRUE))
+    gene <- rep_gene_split[2]
+    return(gene)
+}
+geneListSplit <- apply(X = as.matrix(row.names(resultShort)), 
+                       MARGIN = 1, FUN = funcSplit )
+head(geneListSplit) #cleaned gene names, 82 genes
+
+#remove duplicates
+geneListSplit1 <- unique(geneListSplit) #74 genes
+
+# remove NA value
+geneListFinal <- na.omit(geneListSplit1) #74 genes
+
+head(geneListFinal)
+```
+
+```{r}
+#print number of unique genes
+length(geneListFinal)
+```
+
+```{r}
+write.table(x = geneListFinal, 
+          file = "/Users/austincherian/HIDS_7003/Class_07/Homework_07/output/shortListedUniqueGenes.tsv",
+          quote = F, sep = "\t", row.names = FALSE, col.names = F)
+```
+
+
+## Load Databases for Enrichr R package , and check connection
+```{r}
+#checking if EnrichR website and packing are working
+#dbs <- enrichR::listEnrichrDbs()  #total number of databases available = 200+ 
+
+#testing if EnrichR package is working
+testOutput <- enrichR::enrichr(genes = c("Runx1", "Gfi1", "Gfi1b", "Spi1", "Gata1", "Kdr"), databases = "KEGG_2021_Human")
+head(testOutput[[1]])
+
+#List of databases for which enrichment analysis will be run
+dblist1 <- read.csv(file = "/Users/austincherian/HIDS_7003/finalProject/Part_2/code/input/2023-EnrichR-Databases.txt", 
+                    header = F, stringsAsFactors = F)
+
+head(dblist1)
+```
+
+## Call function to run Enrichment
+Warning: genes must be a non-empty vector of gene names or a data.frame with genes and score.
+
+```{r, message = FALSE, warning = FALSE}
+#convert gene list to a dataframe
+geneList_df <- as.data.frame(geneListFinal)
+
+# set output file name
+outputFileName1 <- paste("/Users/austincherian/HIDS_7003/finalProject/Part_2/output/BladderCancer", "_EnrichR.xlsx", sep="")
+
+#Load R script into the environment
+source(file = "/Users/austincherian/HIDS_7003/finalProject/Part_2/code/functionEnrichment.R") 
+
+#call function to run Enrichment
+functionEnrichment(dblist1, geneList_df, outputFileName1)
+
+#NEED INTERNET CONNECTION
+```

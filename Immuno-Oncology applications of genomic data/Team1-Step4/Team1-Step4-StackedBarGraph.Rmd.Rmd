@@ -1,0 +1,69 @@
+---
+title: "Average Stacked Bar using Cibersort Data"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+---
+```{r, include= FALSE}
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+library(knitr)
+```
+
+
+# Plot Average Stacked Bar using Cibersort Data - R Markdown
+
+* Read in output from Cibersort online 
+* Split into Normal and BC_Surr_Mucosa (pre-cancerous) groups. So you have one cibersort object for each group of interest. 
+* For each group of interest
+    + Plot average stacked for each group (this is one stacked bar with different colors , one color for each immune cell type)
+
+
+## Load in data for Normal (Non-cancerous) and BC_Surr_Mucosa (Pre-cancerous) patient
+```{r}
+cibersortDataRelapse <- read.csv("/Users/austincherian/HIDS_7003/finalProject/finalProject_part4_Cibersort/code/input/CIBERSORTx_BCSurrMucosa_Results.csv", header=TRUE, row.names=1)
+
+cibersortDataRelapseFree <- read.csv("/Users/austincherian/HIDS_7003/finalProject/finalProject_part4_Cibersort/code/input/CIBERSORTx_Normal_Results.csv", header=TRUE, row.names=1)
+knitr::kable(cibersortDataRelapse[1:5, 1:4], caption = "cibersort data")
+knitr::kable(cibersortDataRelapse[1:5, 1:4], caption = "cibersort data")
+```
+
+
+## Call function for each group to plot stacked bar graph
+Output will be a set of graphs in the "outputFolderName" folder
+
+```{r, echo=TRUE, results = 'show'}
+source("functionStackedBarPlot.R")
+
+#calling function for CRC Tumor Relapse
+objectPlotRelapse <- functionStackedBarPlot(
+    cibersortData = cibersortDataRelapse, #set Cibersort Data ojbect for plotting
+    outputFileName = "Out_Ciber_CRCBCSurrMucosa_StackedBarPlot", #set output file name
+    outputFolderName = "/Users/austincherian/HIDS_7003/finalProject/finalProject_part4_Cibersort/code/output", #Set output folder name
+    title1 = "CRC BC Surrounding Mucosa Stacked Bar Plot") #Change Title
+
+### calling function for CRC Tumor No-relapse
+objectPlotRelapseFree <- functionStackedBarPlot(
+    cibersortData = cibersortDataRelapseFree, #set Cibersort Data ojbect for plotting
+    outputFileName = "Out_Ciber_CRCNormal_StackedBarPlot", 
+    #set output file name
+    outputFolderName = "/Users/austincherian/HIDS_7003/finalProject/finalProject_part4_Cibersort/code/output", #Set output folder name
+    title1 = "CRC Normal Stacked Bar Plot") #Change Title
+
+# Read and display saved plots from the output folder
+BC_Surr_Mucosa_plot_path <- "/Users/austincherian/HIDS_7003/finalProject/finalProject_part4_Cibersort/code/output/Out_Ciber_CRCBCSurrMucosa_StackedBarPlot.png"
+Normal_plot_path <- "/Users/austincherian/HIDS_7003/finalProject/finalProject_part4_Cibersort/code/output/Out_Ciber_CRCNormal_StackedBarPlot.png"
+
+# Insert images into the RMarkdown document
+include_graphics(BC_Surr_Mucosa_plot_path)
+include_graphics(Normal_plot_path)
+```
+
+
+
+
+
+
+
+
+

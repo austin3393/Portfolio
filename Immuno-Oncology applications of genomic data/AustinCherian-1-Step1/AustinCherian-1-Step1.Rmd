@@ -1,0 +1,238 @@
+---
+title: "Final Project"
+author: "Austin Cherian"
+output: html_document
+date: "2024-11-23"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Analysis plan of action
+
+Check uploaded docx file
+
+## Step 0
+
+### Clinical Data File Checks
+
+Opened clinical data file in excel to get familiar with the data. Ran
+the following checks:
+
+-   Rows are patients
+-   Columns are clinical attributes
+-   There is one row per patient
+-   Check/Notice the Number of rows and number of columns
+-   All data must be de-identified
+
+In Excel, all of the above checks were performed. The number of rows
+(patients) was 233, and the number of columns (features) was 21.
+
+### Gene Expression Data File Checks
+
+-   Open gene expression data file in excel (if possible) to get
+    familiar with the data. Run the following checks:
+-   Columns are patients
+-   Rows are features (genes in this case)
+-   There is one column per patient
+-   Check/Notice the Number of rows and number of columns
+-   All data must be de-identified
+-   It was given to us that gene expression data was normalized in log2
+    scale and includes gene annotation.
+
+In Excel, all of the above checks were performed. The number of columns
+(patients) is 233, and the number of rows (genes) is 43148. The gene
+expression data did include gene annotation.
+
+## Step 1 - Read in data into R. Check if data was imported correctly
+
+### Read clinical data into R
+
+-   General Checks
+    -   Rows are patients
+    -   Columns are clinical attributes
+    -   There is one row per patient
+    -   How many patients are there (dimensions of the data frame)
+-   Find the column which is your outcome of interest
+-   What are the groups to compare?
+
+### Read gene expression data into R
+
+-   Read in cleaned processed molecular data into R
+    -   Check dimensions of the data frame
+    -   Rows are molecular features/variables (genes in our example)
+    -   Columns are genes
+    -   Rows are patients
+
+#### 1a - Read in clinical data
+
+```{r}
+
+clinData <- read.csv(
+  file = "/Users/austincherian/HIDS_7003/finalProject/code/input/BC_ClinData_233rows.csv", 
+  sep = ",", 
+  header = T, 
+  stringsAsFactors = F,
+  row.names = 1)
+
+knitr::kable(head(clinData[,1:4],n = 5))
+dim(clinData) #233 rows (patients), 21 columns (features)
+```
+
+#### 1b: Read in processed normalized gene expression data in log2 scale, includes gene annotation
+
+```{r}
+geneExp <- read.table(
+  file = "/Users/austincherian/HIDS_7003/finalProject/code/input/BC_GeneExpData_withAnno_233.tsv",
+  sep="\t",
+  row.names = 1,
+  header = T,
+  stringsAsFactors = F,
+  quote = "\"")
+dim(geneExp) #Read in gene expression file - 43148 rows (genes), 233 columns (patients)
+knitr::kable(geneExp[1:3, 1:4], caption =
+"Processed gene expression data in log2 scale with gene annotation")
+```
+
+**The Goal is to compare which two groups ?**
+
+-   Question: What is the outcome variable column from clinical data
+    file ? It is the column in the clinical file that contains the
+    baseline and comparison values
+-   **Answer: The `PrimaryBladderCancerType` column has values “Normal
+    bladder mucosae” (baseline group)** and **“Bladder mucosae
+    surrounding cancer” (comparison group)**
+
+```{r}
+knitr::kable(table(clinData$PrimaryBladderCancerType)) 
+```
+
+## Step 2 - Clean/Filter data
+
+**Filter clinical data**- Clinical data has one row per patient, which
+is good. However, `PrimaryBladderCancerType` has values other than the
+ones we wish to compare, so we need to filter those out.
+
+```{r}
+#logical vector that is True for baseline and comparison group values 
+condition <- as.data.frame(clinData["PrimaryBladderCancerType"] == "Normal bladder mucosae" |clinData["PrimaryBladderCancerType"] == "Bladder mucosae surrounding cancer")
+#filter clinData for values of interests
+clinData_clean <- clinData[condition[,1],]
+knitr::kable(table(clinData_clean$PrimaryBladderCancerType)) 
+```
+
+**Filter gene exp data**
+
+```{r}
+#How gene exp data looks before filter/cleaning
+knitr::kable(geneExp[1:5, 1:4])
+```
+
+#### Subsetting Gene Expression Data
+
+To analyze the data, we need to align the gene expression file with the
+clinical data file by subsetting the gene expression data to include
+only the patients present in the clinical data. This ensures that both
+datasets correspond to the same set of patients.
+
+How are the clinical and gene expression data connected? The connection
+is established through patient identifiers (PIDs), which serve as the
+unique keys for matching between the two files:
+
+**Clinical data sample identifiers:** The GSMid column contains the
+PIDs. **Gene expression data sample identifiers:** The column headers
+represent the PIDs.
+
+By matching these identifiers, we can subset the gene expression data
+for the relevant patients in the clinical dataset.
+
+```{r}
+matchingSamples <- which(colnames(geneExp) %in% clinData_clean$GSMid) #68 IDs matching
+subsetGeneExp <- geneExp[, matchingSamples] #43148 row features, 68 patient columns
+```
+
+## Step 3 - Identify the groups to be compared
+
+### Identify the groups to be compared (Baseline and Comparison Grps)
+
+```{r}
+# Labels (row numbers) that can identify the baseline group patients
+baselineGrpLabels <- which(clinData_clean$PrimaryBladderCancerType == "Normal bladder mucosae") 
+head(baselineGrpLabels)
+
+# Use the labels (row numbers) to subset baseline patients in clinical data file
+clinBase <- clinData_clean[baselineGrpLabels, ] #10 samples
+
+# Labels (row numbers) that can identify the comp group patients
+compGrpLabels <- which(clinData_clean$PrimaryBladderCancerType == "Bladder mucosae surrounding cancer") 
+head(compGrpLabels)
+
+# Use the labels (row numbers) to subset comp patients in clinical data file
+clinComp <- clinData[compGrpLabels, ] #58 samples
+# Use the clinBase and clinComp objects to subset gene expression data
+geneExpTumorBase <- subsetGeneExp[, clinBase$GSMid] #10 samples, 43148 features(rows)
+geneExpTumorComp <- subsetGeneExp[, clinComp$GSMid] #58 samples, 43148 features(rows)
+```
+
+## Step 4: Sanity check
+
+-   Saw if filtering of clinical data in R matches filtering of clinical
+    data in excel
+-   Saw if sample ids in clinical data match sample ids in gene exp data
+    (if they don’t match it means your step 1 and/or 2 is wrong)
+-   Verified seeing correct number of samples in baseline and comp
+    groups
+-   Exported the column names from gene expression data and checked to
+    see if it contained only probe/gene names and no other garbage
+
+```{r}
+#See if sample ids in clinical data match sample ids in gene exp data
+clinBase$GSMid == colnames(geneExpTumorBase)
+clinComp$GSMid == colnames(geneExpTumorComp)
+
+### Checking if the samples IDs baseline and comp groups are the same ---- you can put these in an excel
+write.table(clinBase$GSMid , file = "~/HIDS_7003/finalProject/code/output/ClinBaseIDs.tsv", sep="\t", quote = F )
+write.table(clinComp$GSMid , file = "~/HIDS_7003/finalProject/code/output/ClinCompIDs.tsv", sep="\t", quote = F )
+write.table(colnames(geneExpTumorBase) ,
+file = "~/HIDS_7003/finalProject/code/output/GeneExpBaseIDs.tsv",
+sep="\t", quote = F )
+write.table(colnames(geneExpTumorComp) ,
+file = "~/HIDS_7003/finalProject/code/output/GeneExpCompIDs.tsv",
+sep="\t", quote = F )
+#Export the features from gene expression data
+#Open this file and check that it contains only probe/gene names and no other garbage
+write.table(rownames(geneExp),file = "~/HIDS_7003/finalProject/code/output/genExpFeatureIDsCheck.tsv", sep="\t", quote = F )
+```
+
+## Step 5: Prep data for T-test
+
+-   Gene expression data must have features (genes in this case) as
+    rows, and samples as columns.
+
+-   Objects must be data frame
+
+-   Numeric data only
+
+### Checking to make sure data is a numeric data frame
+
+```{r}
+knitr::kable(head(geneExpTumorBase[1:5,1:4]))
+knitr::kable(head(geneExpTumorComp[1:5,1:4]))
+```
+
+## Step 6- Call function for T-test
+
+```{r}
+source("~/HIDS_7003/finalProject/code/fnTTest.R")
+#### Call T-test function
+results1 = fnTTest(baseGroup = geneExpTumorBase,
+compGroup = geneExpTumorComp,
+testName = "20241123_TTest_",
+baseGroupName = "Normal bladder mucosae",
+compGroupName = "Bladder mucosae surrounding cancer",
+folderName = "~/HIDS_7003/finalProject/code/output")
+```

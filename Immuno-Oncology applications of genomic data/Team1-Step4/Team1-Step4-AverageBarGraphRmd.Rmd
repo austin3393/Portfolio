@@ -1,0 +1,58 @@
+---
+title: "Average Bar Graph using Cibersort Data"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("plyr")
+#install.packages("reshape2")
+library(dplyr)
+library(reshape2)
+```
+
+
+```{r}
+
+# Read in CIBERSORT data for normal samples
+cibersortDataNormal <- read.csv("/Users/natalieellis/Documents/HIDS_7003/FinalProject/step4/input/CIBERSORTx_Normal_Results.csv",
+                                header = TRUE, row.names = 1)
+
+# Read in CIBERSORT data for tumor samples
+cibersortDataTumor <- read.csv("/Users/natalieellis/Documents/HIDS_7003/FinalProject/step4/input/CIBERSORTx_Precancerous_Results (1).csv",
+                               header = TRUE, row.names = 1)
+
+# Display first few rows for verification
+knitr::kable(cibersortDataNormal[1:5, 1:4], caption = "CIBERSORT Normal Data")
+knitr::kable(cibersortDataTumor[1:5, 1:4], caption = "CIBERSORT Tumor Data")
+
+```
+
+```{r}
+source("/Users/natalieellis/Documents/HIDS_7003/FinalProject/step4/code/functionAvgBarPlot.R")
+
+# Plot for Normal Data
+objectPlotNormal <- functionAvgBarPlot(
+    cibersortData = cibersortDataNormal, 
+    outputFileName = "Out_Ciber_Normal_AvgBarPlot",
+    outputFolderName = "output",
+    title1 = "Normal Sample Average Bar Plot",
+    num1 = 22)
+
+objectPlotNormal
+
+# Plot for Tumor Data
+objectPlotTumor <- functionAvgBarPlot(
+    cibersortData = cibersortDataTumor, 
+    outputFileName = "Out_Ciber_Tumor_AvgBarPlot",
+    outputFolderName = "output",
+    title1 = "Tumor Sample Average Bar Plot",
+    num1 = 22)
+
+objectPlotTumor
+
+#Build HTML / PDF
+```

@@ -1,0 +1,96 @@
+---
+title: "Team1-Step4-LineGraph"
+output: html_document
+date: "2024-12-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(plyr)
+library(dplyr)
+library(reshape2)
+```
+
+## CIBERSORT Data
+
+```{r}
+# Read in CIBERSORT data for normal samples
+cibersortDataNormal <- read.csv("input/CIBERSORTx_Normal_Results.csv",
+                                header = TRUE, row.names = 1)
+
+# Read in CIBERSORT data for tumor samples
+cibersortDataTumor <- read.csv("input/CIBERSORTx_Precancerous_Results.csv",
+                               header = TRUE, row.names = 1)
+```
+
+```{r}
+knitr::kable(cibersortDataNormal[1:5, 1:4], caption = "CIBERSORT Normal Data")
+```
+
+```{r}
+knitr::kable(cibersortDataTumor[1:5, 1:4], caption = "CIBERSORT Tumor Data")
+```
+
+## Calculate Means
+
+```{r}
+# Function Definition
+funcMeans <- function(cibersortData) {
+    
+    data3 = as.data.frame(cibersortData[,1:22]) #select only 22 cell type data
+    data1 = as.data.frame(t(cibersortData[,1:22]))
+    
+    colnames(data1) = row.names(cibersortData)
+    data1$row <- row.names(data1)
+    
+    #melt and reshape data 
+    melted <- reshape2::melt(data1, id.vars = "row")
+    melted$row <-factor(melted$row, levels=c(colnames(cibersortData)))
+    
+    #calculate means
+    means <- plyr::ddply(melted, c("row"), summarise, mean=mean(value))
+    
+    data2a <- reshape2::melt(means, id.vars = "row")
+
+    return(data2a)
+}
+
+#calling function to calculate means - returns a data frame with 22 rows and 3 columns
+precancerMeans <- funcMeans(cibersortDataTumor)
+normalMeans <- funcMeans(cibersortDataNormal)
+
+#The First column is the cell type, Third column is the mean value
+colnames(precancerMeans) 
+head(precancerMeans)
+```
+
+## cbind all means
+
+Baseline group is on the left column, precancer is on the right
+
+```{r}
+meansAll = cbind(normalMeans$value, precancerMeans$value)
+row.names(meansAll) <- precancerMeans$row #Set row names - immune cell types
+colnames(meansAll) <- c("Normal", "Precancer")
+```
+
+## Line Graph 
+
+```{r}
+source("functionLineGraph.R")
+
+objectLineGraph <- functionLineGraph(meansAll, 
+                                     outputFileName = "Ciber_LinePlot", 
+                                     outputFolderName = "output") #Set output folder name
+
+#insert object into the Rmarkdown
+objectLineGraph
+
+#Build HTML / PDF
+```
+
+```{r}
+objectLineGraph
+```
+
+
