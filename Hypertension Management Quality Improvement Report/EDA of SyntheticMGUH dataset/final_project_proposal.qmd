@@ -1,0 +1,508 @@
+---
+title: "Final Project"
+author: "Austin Cherian, Natalie Ellis, and David Angel"
+format: html
+editor: visual
+---
+
+```{r setup, include=FALSE}
+#| warning: false
+library(tidyverse)     # loads the tidyverse tools
+library(RPostgres)     # loads the database driver for PostgreSQL
+library(connections)   # helps RPostgres work with RStudio
+library(keyring)       # access to a local encrypted keychain for passwords
+
+
+con <- connection_open(RPostgres::Postgres(),
+          dbname = "syntheticmguh",
+          host = "34.145.215.95",
+          user = "hids502_student",
+          password = key_get(service = "syntheticmguh", 
+                             username = "hids502_student"),
+          # Tell the driver to return very large integers as floating point (vs truncating them)
+          bigint = "numeric")
+
+```
+
+# SyntheticMGUH Hypertension Care Quality Improvement Report
+
+Hypertension is a chronic medical condition characterized by persistently elevated blood pressure and is prevalent among the patient population at MGUH. Due to the increasing number of patients, the health system's hypertension clinics have become overwhelmed. In response, system administrators have tasked our team with assessing whether hypertension management can be improved in primary care clinics to reduce unnecessary referrals.
+
+#### The objective of this analysis is twofold:
+
+**Determine a denominator**: Identify the total number of adult patients with essential hypertension in our healthcare system.
+
+**Evaluate care adequacy**: Quantify how many of these patients are referred to hypertension clinics without receiving adequate management in primary care.
+
+For this study, "**adequate primary care**" for hypertension management is defined as meeting both of the following criteria before referral to a hypertension clinic:
+
+1.  Patients should have been prescribed at least one guideline-recommended **anti-hypertensive medication**.
+2.  Patients should have a **documented care plan** outlining treatment goals, follow-up schedules, and lifestyle interventions for hypertension.
+
+#### Our analysis will follow these steps:
+
+1.  **Data Extraction:** Identify adult patients with essential hypertension from the EHR system using relevant diagnosis codes.
+2.  **Referral Analysis:** Determine how many of these patients were referred to hypertension clinics and evaluate their records for adequate primary care management.
+3.  **Outcome Assessment:** Calculate the proportion of referred patients meeting the defined criteria.
+
+If the majority of patients referred to the hypertension clinic have received adequate primary care, we will recommend implementing more stringent referral criteria to prioritize patients requiring specialized or emergency care.
+
+In such cases, referrals to the hypertension clinic should be reserved for life-threatening conditions based on established international guidelines. We propose adopting the referral criteria outlined by the British and Irish Hypertension Society [(1)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10803252/), which include:
+
+-   **Malignant/Accelerated-Phase Hypertension:**
+
+    -   Blood pressure ≥180/120 mmHg accompanied by retinal hemorrhages or papilledema (optic disc swelling).
+
+-   **Hypertensive Crisis with Target-Organ Damage:**
+
+    -   Life-threatening complications, regardless of blood pressure severity, including but not limited to: Acute Aortic Dissection, Acute Kidney Injury, Acute Myocardial Ischemia (Heart Attack), Acute Heart Failure, Acute Stroke, Pheochromocytoma
+
+-   **Pre-Eclampsia and Severe Hypertension in Pregnancy:**
+
+    -   Requires a multi-disciplinary team approach due to the risk to both mother and fetus.
+
+Referral to a hypertension clinic would only be indicated given one of these criteria.
+
+# Defining Patient Cohorts
+
+## Hypertension patient cohort
+
+Our hypertension cohort consists of patient records extracted from the **encounters**, **procedures**, **medications**, **conditions**, and **careplans** tables, where the corresponding `reasondescription` or `description` field indicates a diagnosis of **Essential Hypertension**.
+
+```{sql connection = con}
+DROP TABLE IF EXISTS hypertension_cohort
+```
+
+```{sql connection = con}
+-- Create a common table expression (CTE) to identify all unique patients with hypertension
+WITH all_hypertension_cohort AS (
+  
+  -- Identify patients from the 'encounters' table where the reason for the visit includes "hypertension"
+  SELECT DISTINCT patient
+  FROM encounters
+  WHERE LOWER(reasondescription) LIKE '%hypertension%'
+  
+  UNION
+  
+  -- Identify patients from the 'procedures' table where the procedure description includes "hypertension"
+  SELECT DISTINCT patient
+  FROM procedures
+  WHERE LOWER(reasondescription) LIKE '%hypertension%' 
+  
+  UNION
+  
+  -- Identify patients from the 'medications' table where the medication reason includes "hypertension"
+  SELECT DISTINCT patient
+  FROM medications
+  WHERE LOWER(reasondescription) LIKE '%hypertension%'
+  
+  UNION 
+  
+  -- Identify patients from the 'conditions' table where the condition description includes "hypertension"
+  SELECT DISTINCT patient
+  FROM conditions
+  WHERE LOWER(description) LIKE '%hypertension%'
+  
+  UNION
+  
+  -- Identify patients from the 'careplans' table where the care plan description includes "hypertension"
+  SELECT DISTINCT patient
+  FROM careplans
+  WHERE LOWER(reasondescription) LIKE '%hypertension%'
+),
+
+-- Create a refined CTE containing demographic information for all hypertension patients
+hypertension_cohort AS (
+    SELECT 
+        ahc.patient,              -- Patient ID from the previous CTE
+        birthdate,                -- Patient's date of birth
+        deathdate,                -- Patient's recorded date of death
+        race,                     -- Patient's race
+        ethnicity,                -- Patient's ethnicity
+        gender,                   -- Patient's gender
+        date_part('year', age('2020-09-24', birthdate)) as age -- Patient's age as of 2020-09-24
+    FROM all_hypertension_cohort ahc
+    JOIN patients ON patients.id = ahc.patient 
+    -- Only include patients who were alive on or after 2019-09-24
+    -- We assume a NULL deathdate means the patient is still alive
+    AND (deathdate IS NULL OR deathdate > '2019-09-24')
+)
+
+-- Create a temporary table to store the final cohort of hypertension patients
+SELECT *
+INTO TEMP TABLE hypertension_cohort
+FROM hypertension_cohort
+```
+
+## Hypertension Patients with Referral to Cardiologist Cohort
+
+We enhanced the hypertension patient cohort by adding a **`referral`** column, indicating whether each patient has been referred to a **hypertension clinic**.
+
+```{sql connection=con}
+DROP TABLE IF EXISTS hypertension_referral_cohort
+```
+
+```{sql connection = con}
+
+-- Create a CTE to identify patients referred to a hypertension clinic
+WITH referral_cohort AS (
+    -- Select distinct patients with referral procedure codes linked to encounters
+    SELECT DISTINCT ON (p.patient) 
+        p.patient,        -- Unique patient ID
+        p.code,           -- Procedure code (referral)
+        p.stop,           -- End date of the procedure
+        e.reasoncode,     -- Reason code from the corresponding encounter
+        1 AS referral     -- Indicator that the patient received a referral
+    FROM procedures p
+    LEFT JOIN encounters e ON p.encounter = e.id -- Link procedures to encounters by encounter ID
+    WHERE p.code = 183856001    -- Procedure code for referral to hypertension clinic
+    AND e.reasoncode = 59621000 -- Reason code for essential hypertension
+),
+
+-- Create another CTE combining patient demographic data with referral data
+hypertension_referral_cohort AS (
+    SELECT 
+        hc.patient,             -- Patient ID from the hypertension cohort
+        hc.birthdate,           -- Patient's date of birth
+        hc.deathdate,           -- Patient's date of death (if applicable)
+        hc.race,                -- Patient's race
+        hc.ethnicity,           -- Patient's ethnicity
+        hc.gender,              -- Patient's gender
+        hc.age,                 -- Patient's calculated age
+        rc.referral,            -- Indicator of referral from the referral cohort
+        rc.stop AS referral_stop_date -- Date when the referral procedure was completed
+    FROM hypertension_cohort hc
+    LEFT JOIN referral_cohort rc ON hc.patient = rc.patient
+    -- Ensure only active patients are included (alive after the cutoff date)
+    AND (hc.deathdate IS NULL OR hc.deathdate > '2019-09-24')
+)
+
+-- Create a temporary table to store the final referral cohort data
+SELECT *
+INTO TEMP TABLE hypertension_referral_cohort
+FROM hypertension_referral_cohort;
+```
+
+## Proportion of Hypertension Patients and Referrals
+
+```{sql connection = con}
+-- Calculate percentage
+SELECT
+    SUM(referral) AS referred_patients,
+    COUNT(DISTINCT patient) AS total_hypertension_patients,
+    SUM(referral) * 100.0 / COUNT(DISTINCT patient) AS percentage_referred -- percentage of hypertension patients referred to the cardiologist 
+FROM hypertension_referral_cohort hc
+```
+
+Our hypertension cohort includes 9,418 patients, of whom 207 were referred to a hypertension clinic, representing 2.20% of the total cohort.
+
+# Demographics
+
+### Gender
+
+The gender breakdown is weighted towards men.
+
+```{sql connection=con}
+    SELECT gender, count(*) as patients
+    FROM hypertension_referral_cohort
+    WHERE referral = 1
+    GROUP BY gender
+```
+
+### Age
+
+```{sql connection=con}
+    SELECT floor(age/10)*10 as age_group, count(*) patients
+    FROM hypertension_referral_cohort
+    WHERE referral =1 
+    GROUP BY age_group ORDER BY age_group
+```
+
+# Compliance with Primary Care Protocols for Hypertensive Care
+
+## Care Plans
+
+How many hypertension patients with a referral have a hypertension-related care plan?
+
+```{sql connection = con}
+
+WITH cp AS (
+SELECT DISTINCT patient, stop, 1 AS care_plan
+FROM careplans
+WHERE description LIKE '%hypertension%'
+),
+
+cp_cohort AS (
+SELECT DISTINCT hc.patient, cp.stop AS cp_stop_date, hc.referral_stop_date, care_plan, referral
+FROM hypertension_referral_cohort hc
+LEFT JOIN cp ON hc.patient = cp.patient
+WHERE cp.stop IS NULL OR cp.stop < hc.referral_stop_date
+AND (hc.deathdate IS NULL OR hc.deathdate > '2019-09-24')
+)
+
+SELECT SUM(care_plan) AS care_plan_patients, 
+       SUM(referral) AS referral_patients, 
+       SUM(care_plan) * 100.0/SUM(referral) AS percent_with_careplans
+FROM cp_cohort
+WHERE referral = 1
+
+/* 29046, 4023, 32968, 5640, 111280, 259255, 197313, 2027, 1045, 5489, 2071, 1977, 6918, 8659, 11289, 309362, 3522, 6902 */
+
+```
+
+All **hypertension patients with a referral** (100%) have a documented **hypertension-related care plan** in their medical records.
+
+## Medications
+
+How many hypertension patients with a referral are on at least one of the recommended anti-hypertensive medications prior to the referral?
+
+### proportion of hypertension referral patients with hypertension medications
+
+```{sql connection = con}
+WITH hypertension_meds AS (
+
+-- ACE Inhibitors
+SELECT 'ACE Inhibitors' AS type, code, description, COUNT(DISTINCT patient) AS patients
+FROM medications
+WHERE 
+    LOWER(description) ~* 'lisinopril|enalapril|ramipril'
+    AND (stop BETWEEN '2019-09-24' AND '2020-09-24' OR (start >= '2019-09-24' AND stop IS NULL))
+GROUP BY type, code, description
+
+UNION
+
+-- ARBs (Angiotensin II Receptor Blockers)
+SELECT 'ARBs' AS type, code, description, COUNT(DISTINCT patient) AS patients
+FROM medications
+WHERE 
+    LOWER(description) ~* 'losartan|valsartan|candesartan'
+    AND (stop BETWEEN '2019-09-24' AND '2020-09-24' OR (start >= '2019-09-24' AND stop IS NULL))
+GROUP BY type, code, description
+
+UNION
+
+-- Calcium Channel Blockers
+SELECT 'Calcium Channel Blockers' AS type, code, description, COUNT(DISTINCT patient) AS patients
+FROM medications
+WHERE 
+    LOWER(description) ~* 'amlodipine|diltiazem|nifedipine'
+    AND (stop BETWEEN '2019-09-24' AND '2020-09-24' OR (start >= '2019-09-24' AND stop IS NULL))
+GROUP BY type, code, description
+
+UNION
+
+-- Thiazide Diuretics
+SELECT 'Thiazide Diuretics' AS type, code, description, COUNT(DISTINCT patient) AS patients
+FROM medications
+WHERE 
+    LOWER(description) ~* 'hydrochlorothiazide|chlorthalidone'
+    AND (stop BETWEEN '2019-09-24' AND '2020-09-24' OR (start >= '2019-09-24' AND stop IS NULL))
+GROUP BY type, code, description
+
+UNION
+
+-- Beta Blockers
+SELECT 'Beta Blockers' AS type, code, description, COUNT(DISTINCT patient) AS patients
+FROM medications
+WHERE 
+    LOWER(description) ~* 'atenolol|metoprolol|propranolol'
+    AND (stop BETWEEN '2019-09-24' AND '2020-09-24' OR (start >= '2019-09-24' AND stop IS NULL))
+GROUP BY type, code, description
+
+UNION
+
+-- Aldosterone Antagonists
+SELECT 'Aldosterone Antagonists' AS type, code, description, COUNT(DISTINCT patient) AS patients
+FROM medications
+WHERE 
+    LOWER(description) ~* 'spironolactone|eplerenone'
+    AND (stop BETWEEN '2019-09-24' AND '2020-09-24' OR (start >= '2019-09-24' AND stop IS NULL))
+GROUP BY type, code, description
+
+UNION
+
+-- Direct Vasodilators
+SELECT 'Direct Vasodilators' AS type, code, description, COUNT(DISTINCT patient) AS patients
+FROM medications
+WHERE 
+    LOWER(description) ~* 'hydralazine|minoxidil'
+    AND (stop BETWEEN '2019-09-24' AND '2020-09-24' OR (start >= '2019-09-24' AND stop IS NULL))
+GROUP BY type, code, description
+
+)
+
+SELECT * FROM hypertension_meds
+ORDER BY type, patients DESC
+
+```
+
+```{sql connection =con}
+WITH referrals AS (
+  SELECT *
+  FROM hypertension_referral_cohort
+  WHERE referral = 1
+),
+
+hypertension_referrals AS (
+SELECT DISTINCT r.patient patients_with_any_medication, 1 AS meds, referral
+  FROM referrals r
+  LEFT JOIN medications ON medications.patient = r.patient
+  WHERE
+-- ACE Inhibitors
+    LOWER(description) ~* 'lisinopril|enalapril|ramipril'
+OR
+-- ARBs (Angiotensin II Receptor Blockers)
+    LOWER(description) ~* 'losartan|valsartan|candesartan'
+OR
+-- Calcium Channel Blockers
+    LOWER(description) ~* 'amlodipine|diltiazem|nifedipine'
+OR
+-- Thiazide Diuretics
+    LOWER(description) ~* 'hydrochlorothiazide|chlorthalidone'
+OR
+-- Beta Blockers
+    LOWER(description) ~* 'atenolol|metoprolol|propranolol'
+OR
+-- Aldosterone Antagonists
+    LOWER(description) ~* 'spironolactone|eplerenone'
+OR
+-- Direct Vasodilators
+    LOWER(description) ~* 'hydralazine|minoxidil'
+)
+
+SELECT 
+  SUM(meds) AS with_medication_patients,
+  SUM(referral) AS total_cohort,
+  SUM(meds) *100.0 /SUM(referral) AS percentage_of_cohort_with_meds
+FROM hypertension_referrals
+```
+
+All **hypertension patients with a referral** (100%) have been prescribed an appropriate **anti-hypertensive medication.**
+
+# Adding more stringent criteria
+
+Since all patients in our **hypertension-referral cohort** have met the criteria for **basic primary care hypertension management**, we will implement **more stringent referral standards** as outlined in the introduction.
+
+## Malignant/accelerated phase hypertension. Blood pressure ≥180/120
+
+What percent of hypertension patients with a referral have had their most recent lab test show a systolic BP greater than 180 and a diastolic BP greater than 120?
+
+```{sql connection = con}
+WITH recent_bp_readings AS (
+    -- Get the most recent systolic and diastolic BP readings per patient
+    SELECT 
+        o.patient, 
+        o.code, 
+        o.description, 
+        CAST(o.value AS FLOAT) AS value_float,
+        o.date
+    FROM observations o
+    LEFT JOIN encounters e ON o.encounter = e.id
+    WHERE e.reasondescription LIKE '%hypertension%' 
+    AND o.code IN ('8480-6', '8462-4') -- Systolic and Diastolic BP codes
+    AND date <= '2020-09-24'
+    ORDER BY o.patient, o.code, o.date DESC
+),
+
+most_recent_bp AS (
+    -- Use DISTINCT ON to keep the latest systolic and diastolic readings per patient
+    SELECT DISTINCT ON (patient, code)
+        patient, 
+        code, 
+        value_float, 
+        description, 
+        date
+    FROM recent_bp_readings
+    ORDER BY patient, code, date DESC
+)
+
+
+SELECT 
+    DISTINCT patient, 
+    description,
+    value_float
+FROM 
+    most_recent_bp bp
+WHERE 
+    (bp.code = '8480-6' AND bp.value_float >= 180) -- Systolic BP
+    OR
+    (bp.code = '8462-4' AND bp.value_float >= 120) -- Diastolic BP
+
+
+    
+```
+
+It turns out that no patients in our hypertension referral cohort have had their most recent lab test fulfill the aforementioned systolic/diastolic BP criteria.
+
+## Hypertensive Crisis with Target-Organ Damage
+
+What percent of hypertension patients with a referral have a life-threatening condition that could trigger a hypertensive crises?
+
+```{sql connection = con}
+WITH numbered_conditions AS (
+    SELECT 
+        patient, 
+        CASE 
+            WHEN LOWER(reasondescription) ~* 'acute aortic dissection|acute kidney injury|acute myocardial ischaemia|acute heart failure|stroke|phaeochromocytoma' THEN 1
+            ELSE 0
+        END AS hypertensive_crisis_condition
+    FROM encounters
+),
+
+hypertensive_crises_cohort AS (
+SELECT 
+    patient,
+    MAX(hypertensive_crisis_condition) AS hypertensive_crisis_condition
+FROM numbered_conditions
+GROUP BY patient
+),
+joined_hypertension_cohort AS (
+SELECT hr.patient, referral, hypertensive_crisis_condition
+FROM hypertension_referral_cohort hr
+LEFT JOIN hypertensive_crises_cohort hc
+ON hr.patient = hc.patient
+WHERE referral = 1
+)
+
+SELECT 
+  SUM(hypertensive_crisis_condition) AS hypertensive_crises_condition_patients,
+  SUM(referral) AS total_referral_patients,
+  SUM(hypertensive_crisis_condition) * 100.0/SUM(referral) AS percent_with_crisis_condition
+FROM joined_hypertension_cohort
+
+```
+
+None of the patients in our cohort have such a life-threatening condition.
+
+## Pre-Eclampsia and Severe Hypertension in Pregnancy
+
+What percent of hypertension patients with a referral have the condition, pre–eclampsia?
+
+```{sql connection = con}
+WITH preeclampsia_cohort AS (
+SELECT DISTINCT patient, 1 AS preeclampsia
+FROM conditions
+WHERE LOWER(description) LIKE '%preeclampsia%'
+),
+
+joined_hypertension_cohort AS (
+SELECT DISTINCT hr.patient, hr.referral, p.preeclampsia
+FROM hypertension_referral_cohort hr
+LEFT JOIN preeclampsia_cohort p 
+ON hr.patient = p.patient
+WHERE referral = 1
+)
+
+SELECT SUM(preeclampsia) AS preeclampsia_patients,
+  SUM(referral) AS total_referral_patients,
+  SUM(preeclampsia) * 100.0 / SUM(referral) AS percent_with_preeclampsia
+FROM joined_hypertension_cohort
+```
+
+Based on the **more stringent referral criteria**, only **6.76% (14 patients)** of the **hypertension cohort referred to a hypertension clinic** were appropriately referred due to **pre-eclampsia**.
+
+# References
+
+1.  Lewis P, George J, Kapil V, et al. Adult hypertension referral pathway and therapeutic management: British and Irish Hypertension Society position statement. *Journal of Human Hypertension*. 2024;38(1):3-7. doi:https://doi.org/10.1038/s41371-023-00882-2
+
+‌
