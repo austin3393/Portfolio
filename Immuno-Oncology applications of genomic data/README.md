@@ -11,32 +11,26 @@ The ultimate goal was to facilitate the early detection of bladder cancer and pr
 ## Major Steps
 
 ### Step 1: Differential Gene Expression Analysis (individual)
-- Compared gene expression in many genes between precancerous and normal tissue.
-- Performed **T-test group comparison** in R to identify differentially expressed genes (DEGs).
+-Compiled a list of differentially expressed genes (DEGs) by comparing precancerous tissue samples to normal tissue samples from the bladder mucosa using **T-test group comparison** in R.
+
 
 ### Step 2: Pathway and Gene Ontology Enrichment Analysis (individual)
-- Conducted **pathway enrichment** and **gene ontology (GO) enrichment** analysis for DEGs (differentially expressed genes).
-- Used R for systems biology analysis.
+- Conducted **pathway enrichment** and **gene ontology (GO) enrichment** analysis for DEGs (differentially expressed genes) using EnrichR package in R.
+- Identified statistically significant pathways associated with the DEGs.
 
 ### Step 3: Immuno-Oncology Analysis (individual)
-- Utilized the **CIBERSORT** package to analyze immune cell types based on gene expression data.
+- Utilized the **CIBERSORT** package to analyze and compare the average immune cell type profiles between precancerous and normal tissue samples.
 
 ### Step 4: Comparative Analysis (group)
 - Compared results from **pathway enrichment** and **CIBERSORT** analysis to identify key tumor-related pathways and immune responses.
 
+
 ### Step 5: Results and Discussion (group)
 - Selected important tumor-related and immune-related pathways, top-ranked DEGs, and immune cell types.
-- Discussed findings in the context of bladder cancer diagnostics and treatment.
+- Conducted an analysis to demonstrate how the dysfunction of specific pathways and alterations in immune cell type proportions contribute to tumorigenesis and immune evasion, supported by existing scientific literature.
 
-
-## Key Findings
-
-- Identified significant **differentially expressed genes (DEGs)** associated with bladder cancer progression.
-- Highlighted key pathways and immune cell types involved in tumorigenesis and immune evasion.
-- Provided insights into potential biomarkers for early detection and therapeutic targets in bladder cancer.
 
 ---
-
 ## Tools and Techniques
 
 - **Programming Language:** R
@@ -49,9 +43,7 @@ The ultimate goal was to facilitate the early detection of bladder cancer and pr
 
 ## Team Members
 
-- **Austin**: conducted DEG identification, EnrichR pathway analysis, and Cibersort immune profiling individually. Also, added analysis concerning
-  
-- Refer to the **midte rm team roster** on Canvas for member details.
+- **Austin**: conducted DEG identification, EnrichR pathway analysis, Cibersort immune profiling and Stacked Bar plot individually. Also, added analysis of the "Toll-like Receptor Cascades (R-HSA-168898)" pathway. 
 
 ---
 
