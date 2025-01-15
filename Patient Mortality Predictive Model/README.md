@@ -18,9 +18,18 @@ The project was completed as part of the **HIDS 6001: Massive Health Data Fundam
 
 ## Contributions
 
-- **Austin Cherian:** Feature extraction, model implementation, hyperparameter tuning, feature importance analysis, slides, and final report.
-- **Hanane Bousfoul:** Outcome variable calculation, conditions transformation, result analysis, slides, and final report.
-- **Natalie Ellis:** EDA, high-risk admissions identification, medication analysis, and binary flag creation, slides, and final report.
+- **Austin Cherian**  
+  - Extracted the age feature, ran the logistic regression and random forest models, performed hyperparameter tuning, and conducted the feature importance analysis.  
+  - Worked on the presentation slides and final report.  
+
+- **Hanane Bousfoul**  
+  - Calculated the outcome variable, identified and grouped the conditions of interest, and transformed them into binary features.  
+  - Merged demographic data, analyzed the results from various models, and worked on the presentation slides and final report.  
+
+- **Natalie Ellis**  
+  - Performed EDA on observations and identified high-risk admissions using keyword searches.  
+  - Analyzed the medications table, categorized high-risk drugs into relevant groups, and created binary flags for these categories.  
+  - Ran the models for Feature Group 2 and worked on the presentation slides and final report.  
 
 ---
 
