@@ -1,0 +1,512 @@
+---
+title: "Homework_06"
+author: "Austin Cherian"
+date: "2024-10-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#| warning: false
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)     # loads the tidyverse tools
+library(RPostgres)     # loads the database driver for PostgreSQL
+library(connections)   # helps RPostgres work with RStudio
+library(keyring)       # access to a local encrypted keychain for passwords
+library(ggplot2)
+
+con <- connection_open(RPostgres::Postgres(),
+          dbname = "syntheticmguh",
+          host = "34.145.215.95",
+          user = "hids502_student",
+          password = key_get(service = "syntheticmguh", 
+                             username = "hids502_student"),
+          # Tell the driver to return very large integers as floating point (vs truncating them)
+          bigint = "numeric")
+```
+
+## Introduction
+
+This report examines the quality of care provided to asthma patients within the SyntheticMGUH database, focusing on data collected from October 2022 to October 2023, which is when the SyntheticMGUH database was created. Asthma is a chronic respiratory condition that significantly impacts patients' quality of life and requires ongoing management to prevent exacerbations. According to established guidelines, effective asthma care includes the implementation of a comprehensive asthma care plan, prescription of both maintenance and rescue inhalers, and administration of the pneumococcal vaccination within the past year. This report aims to define the population of asthma patients explicitly, utilizing specific criteria to identify individuals with asthma based on their medical history and treatment records. We will analyze demographic factors such as age, gender, race, and smoking status, and evaluate the proportion of patients receiving recommended care interventions. Through this analysis, we aim to provide insights into adherence to care guidelines and identify areas for improvement in asthma management.
+
+## Defining Asthma Patient Cohort
+
+In this report, we define the criteria for identifying asthmatic patients based on a comprehensive analysis of prescription medications, medical diagnoses, and treatment encounters.
+
+### Diagnosed with Asthma
+
+First, we identify patients diagnosed with an asthma disorder, using the “conditions” table as our data source. Here, the "description" field must explicitly mention asthma, and we apply the criterion that the "stop" field is NULL, ensuring that we only consider individuals with an active diagnosis of asthma. It is worth noting that a patient cannot have both an active childhood asthma and active regular asthma diagnosis at the time.
+
+```{sql connection=con}
+SELECT description, COUNT(DISTINCT patient)
+FROM conditions
+WHERE LOWER(description) LIKE '%asthma%' AND stop IS NULL
+GROUP BY description
+-- checked to make sure that none of the individual patients have multiple asthma diagnoses (i.e both childhood asthma and asthma)
+```
+
+From the above query, we can see that 40 patients are diagnosed with asthma, and 312 patients are diagnosed with childhood asthma.
+
+### Asthma medications
+
+Next, we consider patients who have been prescribed asthma medications, including both rescue and maintenance inhalers. The data for this assessment is sourced from the “medications” table, where we specifically look at the "code" field to ensure it aligns with a predetermined list of codes for maintenance and rescue inhalers. Additionally, the "reasondescription" field must explicitly indicate that the reason for the prescription is "asthma" or "childhood asthma," thereby excluding instances where inhalers were prescribed for diagnoses such as pulmonary emphysema, chronic bronchitis, or hypoxemia. While acknowledging there is some overlap between the presentations of the aforementioned diagnoses and asthma [(1)](https://www.lung.org/lung-health-diseases/lung-disease-lookup/asthma/learn-about-asthma/types/asthma-copd-overlap-syndrome), we chose to focus on patients with distinct presentations of asthma as indicated by their “reasondescription”. Furthermore, we only include active prescriptions, which again are indicated by a "stop" field value of NULL.
+
+```{sql connection = con}
+SELECT reasondescription, COUNT(DISTINCT patient)
+FROM medications
+WHERE 
+  code IN (95996, 349094, 616830, 1998774, 896209, 896006, 966529, 746815, 966524, 1547660, 1998772, 1536144, 630208, 859088, 745752, 351137, 351136, 245314, 2123111, 746763)
+  -- list of codes that describe both rescue and maintenance inhalers 
+  AND (reasondescription = 'Asthma' OR reasondescription = 'Childhood asthma')
+  AND stop IS NULL 
+  --active prescription
+GROUP BY reasondescription
+```
+
+The query shows 1333 people were prescribed inhalers for childhood asthma, and 39 people were prescribed inhalers for regular asthma.
+
+### Encounters where patient treated for asthma
+
+Finally, we examine the encounters table. In this context, the "reasondescription" field must contain the term "asthma," reflecting instances where patients received treatment specifically for this condition. The "start" field for each encounter must also fall after October 2022, aligning with the lower bound of our study's time frame.
+
+```{sql connection = con}
+SELECT COUNT(DISTINCT patient) as num_of_asthma_patients
+FROM encounters
+WHERE LOWER(reasondescription) LIKE '%asthma%'
+  AND start >= '2022-10-01T00:00:00Z'
+-- make sure encounters are after our study start date
+```
+
+It appears that 607 patients were treated for asthma in their encounters.
+
+It is important to note that asthma is generally considered a lifelong disease, though symptoms may diminish in frequency or intensity over time [(2)](https://www.nhs.uk/conditions/asthma/). Our objective is to enhance the quality of care for asthma patients based on synthetic data records from the past year. Consequently, we aim to establish a cohort comprising patients with an active asthmatic condition, explicitly excluding those who are no longer prescribed asthma medications or diagnosed with an asthmatic condition. This focused approach allows for a clearer assessment of care quality among individuals currently managing asthma.
+
+### Alive Patients
+
+Along with the previous criteria, we want to add one more to ensure we only consider patients who are alive. We do so by making sure that the “DeathDate” field in the “patients” table is NULL. This criterion allows for a clearer assessment of care quality among individuals currently managing asthma.
+
+```{sql connection = con}
+SELECT deathdate, COUNT(id)
+FROM patients
+WHERE deathdate IS NULL
+GROUP BY deathdate
+-- make sure we only consider alive patients
+```
+
+There are 25000 patients in the SyntheticMGUH database that are alive
+
+### Putting it together
+
+Having established the criteria for our cohort, we will now consolidate all these elements into a single query. The results of this query will be inserted into a temporary table named “asthmaCohort,” which will serve as the foundation for our subsequent analysis.
+
+#### Check one row per patient
+
+To ensure the integrity of our data set, we will first verify that each patient occupies only one row in the temporary table. This will be done by comparing the total number of rows in the table to the distinct count of patients, allowing us to confirm that there are no duplicate entries.
+
+```{sql connection = con}
+WITH asthma_cohort AS (
+  SELECT DISTINCT patient
+  FROM medications
+  WHERE 
+    code IN (95996, 349094, 616830, 1998774, 896209, 896006, 966529, 746815, 966524, 1547660, 1998772, 1536144, 630208, 859088, 745752, 351137, 351136, 245314, 2123111, 746763)
+    AND (reasondescription = 'Asthma' OR reasondescription = 'Childhood asthma')
+    AND stop IS NULL
+-- prescribed maintenance or rescue inhaler for asthma condition
+  UNION
+  
+  SELECT DISTINCT patient
+  FROM conditions
+  WHERE LOWER(description) LIKE '%asthma%' AND stop IS NULL
+  UNION
+-- has a diagnosed asthma condition  
+  SELECT DISTINCT patient
+  FROM encounters
+  WHERE LOWER(reasondescription) LIKE '%asthma%'
+    AND start >= '2022-10-01T00:00:00Z'
+),
+
+-- was treated for an asthma condition after our study's start date
+
+alive_cohort AS (
+  SELECT id, deathdate
+  FROM patients
+  WHERE deathdate IS NULL
+),
+-- defining alive patient cohort
+
+alive_asthma_cohort AS (
+  SELECT *
+  FROM asthma_cohort
+  INNER JOIN alive_cohort
+  ON asthma_cohort.patient = alive_cohort.id
+)
+--using inner join to make sure we keep only alive asthma patients
+
+SELECT COUNT(*) AS rows, COUNT(patient) AS num_of_patients
+FROM alive_asthma_cohort
+```
+
+The number of rows and the number of patients are equal, so we can be confident that each patient only occupies one row.
+
+#### Creating asthmaCohort table
+
+We will now proceed with the creation of the “asthmaCohort” table. To ensure a clean slate, we will first drop the table if it already exists.
+
+Following this, we will execute the previously consolidated query once more, but this time we will direct the output into the newly created “asthmaCohort” table.
+
+```{sql connection = con}
+DROP TABLE IF EXISTS asthmaCohort
+```
+
+```{sql connection = con}
+WITH asthma_cohort AS (
+  SELECT DISTINCT patient
+  FROM medications
+  WHERE 
+    code IN (95996, 349094, 616830, 1998774, 896209, 896006, 966529, 746815, 966524, 1547660, 1998772, 1536144, 630208, 859088, 745752, 351137, 351136, 245314, 2123111, 746763)
+    AND (reasondescription = 'Asthma' OR reasondescription = 'Childhood asthma')
+    AND stop IS NULL
+  UNION
+  
+  SELECT DISTINCT patient
+  FROM conditions
+  WHERE LOWER(description) LIKE '%asthma%' AND stop IS NULL
+  UNION
+  
+  SELECT DISTINCT patient
+  FROM encounters
+  WHERE LOWER(reasondescription) LIKE '%asthma%'
+    AND start >= '2022-10-01T00:00:00Z'
+),
+
+alive_cohort AS (
+  SELECT id, deathdate
+  FROM patients
+  WHERE deathdate IS NULL
+),
+
+alive_asthma_cohort AS (
+  SELECT asthma_cohort.patient
+  FROM asthma_cohort
+  INNER JOIN alive_cohort
+  ON asthma_cohort.patient = alive_cohort.id
+)
+SELECT * INTO TEMP asthmaCohort FROM alive_asthma_cohort
+```
+
+We can validate that we successfully created the table with the following query:
+
+```{sql connection = con}
+SELECT *
+FROM asthmaCohort
+LIMIT 5
+```
+
+Great! We verified that we created a table of asthma patients, and we can begin our analysis.
+
+## Describe the asthma population
+
+### Race
+
+To analyze the racial distribution of asthma patients in our dataset, we will group the patients based on the "race" field in the "patients" table.
+
+```{sql connection = con}
+WITH rc AS (
+  SELECT race, COUNT(patient) AS race_counts
+  FROM asthmaCohort
+  LEFT JOIN patients
+  ON asthmaCohort.patient = patients.id
+  GROUP BY race
+)
+
+
+SELECT race, race_counts*100/SUM(race_counts) OVER() AS percentage
+FROM rc
+
+
+```
+
+It appears as though the majority of the patients in our table are black (48.56%) and white (44.32%).
+
+### Gender
+
+To assess the gender distribution of asthma patients in our dataset, we will group the patients according to the "gender" field in the "patients" table. This method enables us to systematically categorize the data and identify the representation of different gender groups within the asthma patient population.
+
+```{sql connection = con}
+-- define the totals grouped by gender 
+WITH gc AS (
+  SELECT gender, COUNT(patient) AS asthma_patient_count
+  FROM asthmaCohort
+  LEFT JOIN patients
+  ON asthmaCohort.patient = patients.id
+  GROUP BY gender
+)
+
+SELECT 
+  gender,
+  asthma_patient_count, 
+  asthma_patient_count * 100/SUM(asthma_patient_count) OVER() AS percentage
+FROM gc
+
+```
+
+It appears that distribution of gender in our data set is split pretty evenly with males comprising 47.44% and females comprising 52.56% of the data.
+
+### Age
+
+What is the age distribution of the asthma patients in our data set? To calculate the ages of the patients, we will use October 1st, 2023, at 00:00:00 as the reference date. This date marks the creation of the SyntheticMGUH database and serves as the upper limit for our analysis time frame.
+
+In addition, we will store the output as a variable, so we can visualize the age distribution in R.
+
+```{sql connection = con, output.var="age_df"}
+SELECT EXTRACT(YEAR FROM AGE('2023-10-01T00:00:00Z', birthdate)) AS age,
+       patient
+FROM patients
+JOIN asthmaCohort ON patients.id = asthmaCohort.patient
+-- made sure there are no NULL ages from that operation
+```
+
+#### Plotting age distribution
+
+```{r, warning=FALSE, message=FALSE}
+ggplot(age_df, aes(x = age)) +
+  geom_histogram(aes(y = ..density..), color = "darkblue", fill = "lightblue") + 
+  geom_density(alpha = 0.2, fill = "#FF6666") +
+  xlab("Age") + 
+  ylab("Density") + 
+  labs(title = "Distribution of Age in Asthma Cohort")
+
+
+```
+
+In the histogram above, the x-axis represents age, while the y-axis indicates the number of patients. The age distribution within the “asthmaCohort” dataset appears to approximate a normal distribution, although it does exhibit a rightward skew. This suggests that while most patients are clustered around a central age, there are a notable number of older patients extending the tail on the right side of the distribution.
+
+### Smoker status
+
+What percentage of the asthma patients in our tables are active, regular smokers? In the query below, we focus exclusively on patients who have a documented diagnosis of smoking. This means they have a condition explicitly indicating someone who smokes daily, as noted in the "description" field of the "conditions" table. Additionally, we ensure that these patients are classified as active smokers, which is confirmed by the "stop" field being NULL.
+
+#### Checking conditions tables
+
+```{sql connection = con}
+SELECT code, description, COUNT(DISTINCT patient) AS smoker_count
+FROM conditions
+WHERE LOWER(description) LIKE '%smoke%'
+-- checks for diagnosed condition related to smoking
+  AND stop IS NULL
+--active smoker
+GROUP BY code, description
+-- 449868002 is the code for "Smokes tobacco daily"
+```
+
+We have 202 active diagnosed smokers as indicated by the conditions table.
+
+#### Checking encounters table
+
+In the query below, we also examine the "encounters" table for patients who received treatment for a smoking-related condition, as indicated by the "reasondescription" field. However, we found that there were no patients who met the specified criteria for active smokers in the "encounters" table.
+
+```{sql connection = con}
+SELECT reasoncode, reasondescription, COUNT(DISTINCT patient)
+FROM encounters
+WHERE LOWER(reasondescription) LIKE '%smoke%'
+GROUP BY reasoncode, reasondescription
+-- no smokers in the encounters tables
+```
+
+#### Calculating the percentage of smokers
+
+Using the criteria previously established to define our smoker cohort, we will join this cohort with the asthma cohort to identify which asthma patients have a smoking status.
+
+```{sql connection = con}
+--create CTE with patients table plus smoking status column
+WITH smoker_status AS (
+  SELECT DISTINCT patient,
+  CASE
+    WHEN code = '449868002' AND stop IS NULL THEN 'YES'
+    ELSE 'NO'
+    END AS smoker_status
+  FROM conditions),
+
+sc AS (
+  SELECT smoker_status, COUNT(a.patient) AS smoker_counts
+  FROM asthmaCohort AS a
+  LEFT JOIN smoker_status AS s
+  ON a.patient = s.patient
+  GROUP BY smoker_status)
+
+
+SELECT smoker_status, smoker_counts*100/SUM(smoker_counts) OVER() AS percentage
+FROM sc
+```
+
+As shown by the query above, 99.76% of the patients in our data set are not active habitual smokers while 0.24% are.
+
+## Determine what proportion have an asthma care plan
+
+Next, we aim to determine the proportion of the asthma cohort that has an asthma care plan. This assessment will help us evaluate whether we are providing appropriate treatment to our asthmatic patients.
+
+To identify an asthma care plan, we created a new column called "asthma_care_plan." This column is assigned a value of 'Yes' if the "description" or "reasondescription" fields contain terms related to "asthma," and 'No' otherwise. Additionally, we ensure that the care plans are active by verifying that the "stop" field is NULL.
+
+After joining the "careplans" table with the "asthmaCohort" table, we noted that there are more rows than patients, as an individual patient may have multiple care plans. To address this issue, we need to aggregate the data so that if an asthma patient has at least one asthma care plan, they will be classified as having one.
+
+First, we will create a new column named "asthma_care_plan_final," which will take a value of 1 if "asthma_care_plan" is 'Yes' and 0 if it is 'No.' Next, we will aggregate the data using the MAX() function, ensuring that if there is at least one asthma care plan among a patient's records, only that plan is retained.
+
+From this aggregated data, we can then calculate the percentage of asthma patients who have an asthma care plan, as well as the percentage of those who do not.
+
+```{sql connection = con}
+WITH asthma_care_plan AS ( 
+  SELECT DISTINCT a.patient, cp.description, cp.reasondescription,
+    CASE
+      WHEN (LOWER(cp.description) LIKE '%asthma%' OR LOWER(cp.reasondescription) LIKE '%asthma%') THEN 'Yes'
+      ELSE 'No' 
+    END AS asthma_care_plan
+--checks for care plan related to asthma
+  FROM asthmaCohort AS a
+  LEFT JOIN careplans AS cp ON a.patient = cp.patient
+  WHERE cp.stop IS NULL
+-- active care plan 
+--it's ok in this case if the where clause is executed after the join
+),
+
+cpc AS (
+SELECT 
+  COUNT(DISTINCT patient) AS total_patients,
+  MAX(CASE WHEN asthma_care_plan = 'Yes' THEN 1 ELSE 0 END) AS asthma_care_plan_final
+FROM asthma_care_plan
+)
+--have to aggregate rows so only one row per patient
+-- for each patient, if at least one careplan meets the criteria of being an asthma care plan, then only that row is kept using the MAX() function
+
+SELECT
+  CASE WHEN asthma_care_plan_final = 1 THEN 'Yes'
+       WHEN asthma_care_plan_final = 0 THEN 'No'
+-- converting the binary values back to categorical
+  END AS has_asthma_care_plan, 
+  total_patients * 100/SUM(total_patients) OVER() AS percentage
+FROM cpc
+   
+```
+
+The percentage of asthma patients that have an asthma care plan is 100%, which is great news!
+
+## Determine what proportion have a maintenance and rescue inhaler
+
+To determine the proportion of our asthma patient cohort that have a maintenance or rescue inhaler, we will break this analysis down into specific categories: those with only a rescue inhaler, those with only a maintenance inhaler, those with both, and those with neither.
+
+Both maintenance and rescue inhalers are defined by predetermined sets of codes in the “code” field of the “medications” table. We will begin by joining the "asthmaCohort" table with the medications table.
+
+Given that a single patient may have multiple medications, it is essential to aggregate this data effectively. For maintenance inhalers, we will create a new column named "has_maintenance." If a medication meets the criteria for a maintenance inhaler, this column will be assigned a value of 1; otherwise, it will be assigned a value of 0. We will then apply the MAX() function to the "has_maintenance" column to consolidate records, ensuring that we capture only whether a patient has been prescribed at least one maintenance inhaler.
+
+We will follow a similar process for rescue inhalers, creating a new column called "has_rescue" and applying the MAX() function to aggregate records of patients who may have multiple prescribed rescue inhalers.
+
+Subsequently, we will create another common table expression with a new column called "which_meds." In this column, if "has_rescue" equals 0 and "has_maintenance" equals 1, the value will be “maintenance.” If "has_rescue" equals 1 and "has_maintenance" equals 0, the value will be “rescue.” If both columns have a value of 1, then "which_meds" will be labeled “both.” Finally, if both columns are 0, "which_meds" will be classified as “neither.”
+
+From this aggregated data, we can calculate the percentage of asthma patients in each of the categories: “maintenance,” “rescue,” “both,” and “neither.”
+
+```{sql connection= con}
+WITH asthma_meds AS (
+  SELECT a.patient, m.code, m.description
+  FROM asthmaCohort AS a
+  LEFT JOIN medications AS m ON a.patient = m.patient
+),
+
+categorized_meds AS (
+   SELECT patient,
+    MAX(CASE WHEN code IN (95996, 349094, 616830, 1998774, 896209, 896006, 966529, 746815, 966524, 1547660, 1998772, 1536144) THEN 1 ELSE 0 END) AS has_maintenance,
+    --aggregates all the maintenance inhaler rows
+    MAX(CASE WHEN code IN (630208, 859088, 745752, 351137, 351136, 245314, 2123111, 746763) THEN 1 ELSE 0 END) AS has_rescue
+    --aggregates all the rescue inhaler rows
+  FROM asthma_meds
+  GROUP BY patient
+),
+
+further_categorized_meds AS (
+SELECT DISTINCT patient,
+  CASE 
+    WHEN has_rescue = 0 AND has_maintenance = 1 THEN 'maintenance'
+    WHEN has_rescue = 1 AND has_maintenance = 0 THEN 'rescue'
+    WHEN has_rescue = 1 AND has_maintenance = 1 THEN 'both' 
+    WHEN has_rescue = 0 AND has_maintenance = 0 THEN 'neither'
+  END AS which_meds
+FROM categorized_meds
+),
+
+cmc AS (
+SELECT COUNT(DISTINCT patient) AS asthma_patient_count, which_meds
+FROM further_categorized_meds
+GROUP BY which_meds)
+
+
+SELECT 
+  which_meds,
+  asthma_patient_count * 100.0 / SUM(asthma_patient_count) OVER () AS percentage
+FROM cmc
+
+```
+
+The resulting query reveals that in our asthma cohort, 74.32% of patients possess a rescue inhaler, 25.60% have both a rescue and a maintenance inhaler, and 0.08% of patients fall into the category of having neither inhaler.
+
+Interestingly, there is no category for patients with only a maintenance inhaler, as all individuals prescribed a maintenance inhaler in our data set were also found to have a rescue inhaler. However, it is important to note that the reverse case is not necessarily true.
+
+## Determine what proportion of patients have received the vaccination in the preceding 12 months
+
+To determine the proportion of patients in our “asthmaCohort” table who have received the pneumococcal vaccination in the past 12 months, we will begin by clearly defining the relevant conditions within our SyntheticMGUH database.
+
+We will join the “asthmaCohort” table with the “immunizations” data table. However, we encounter a familiar challenge: a single patient may have multiple immunizations. To address this, we need to categorize each immunization based on two specific criteria: whether it is a pneumococcal vaccination and whether it was administered within the last 12 months.
+
+For the first criterion, we will create a new column named "has_vacc." If the “description” field of an immunization record contains 'Pneumococcal conjugate PCV 13,' this column will be assigned a value of 'Yes'; otherwise, it will be 'No.' For the second criterion, we will introduce another column called "within_12." This column will contain the value 'Yes' if the duration between the “start” date of the immunization (when immunization was taken) and the reference date of October 1, 2023 (the upper bound of our study) is less than 12 months; otherwise, it will be 'No.'
+
+After labeling our criteria, we need to convert these values into a binary format for aggregation. In a new column, "has_vacc_within_12," an immunization will receive a value of 1 if both "has_vacc" and "within_12" are 'Yes,' and 0 otherwise.
+
+Finally, we will apply the MAX() function to the "has_vacc_within_12" column to consolidate the records, ensuring that if a patient has received at least one immunization that meets our defined criteria, then only that record is retianed.
+
+```{sql connection = con}
+WITH asthma_vacc AS (
+  SELECT 
+    DISTINCT a.patient AS asthma_patient, 
+    CASE
+      WHEN description = 'Pneumococcal conjugate PCV 13' THEN 'Yes'
+      ELSE 'No'
+    END AS has_vacc, 
+-- label the pneumoccocal vaccine
+    CASE
+      WHEN (EXTRACT(Year FROM AGE('2023-10-01T00:00:00Z', date)) * 12 + EXTRACT(Month FROM AGE('2023-10-01T00:00:00Z', date))) <= 12 THEN 'Yes'
+      ELSE 'No'
+    END AS within_12
+--label taking any vaccine within 12 months 
+  FROM asthmaCohort AS a
+  LEFT JOIN immunizations AS i
+  ON a.patient = i.patient),
+
+agg_asthma_vacc AS (
+SELECT
+  DISTINCT asthma_patient,
+  MAX(CASE
+        WHEN (has_vacc = 'Yes' AND within_12 = 'Yes') then 1
+        ELSE 0
+      END) AS has_vacc_within_12
+FROM asthma_vacc
+GROUP BY asthma_patient),
+--aggregates data according to whether the immunization fufills the criteria of being the pneumoccocal vaccine and being taken in the last 12 months 
+
+avc AS (
+  SELECT 
+    CASE
+      WHEN has_vacc_within_12 = 1 THEN 'Yes'
+      WHEN has_vacc_within_12 = 0 THEN 'No'
+-- converting binary balues back to categorical
+    END AS has_vacc_within_last_year,
+    COUNT(asthma_patient) as asthma_patient_count
+  FROM agg_asthma_vacc
+  GROUP BY has_vacc_within_12)
+  
+SELECT has_vacc_within_last_year, asthma_patient_count * 100/ SUM(asthma_patient_count) OVER() AS percentage
+FROM avc
+
+```
+
+The resulting query reveals that in our asthma cohort, 0.24% of patients did receive a pneumococcal vaccination in the last 12 months, and 99.76% did not. This finding exposes an area of patient care for asthma patients that can be improved upon.
+
+## References
+
+1.  American Lung Association. Asthma-COPD Overlap Syndrome (ACOS) [Internet]. Lung.org. ; 2023 [cited 2024 Oct 18]. Available from: <https://www.lung.org/lung-health-diseases/lung-disease-lookup/asthma/learn-about-asthma/types/asthma-copd-overlap-syndrome>
+
+2.  NHS website. Asthma [Internet]. nhs.uk. 2017 [cited 2024 Oct 18]. Available from: <https://www.nhs.uk/conditions/asthma/>
